@@ -9,14 +9,18 @@ import {
   ChevronRight,
   CircleHelp,
   Compass,
+  Edit2,
   Heart,
   ImagePlus,
   LogOut,
+  MessageCircle,
   Menu,
   Moon,
   Search,
+  Send,
   Settings2,
   Sun,
+  Trash2,
   Upload,
   UserRound,
   X,
@@ -48,13 +52,36 @@ function initials(name = '') {
     .join('') || 'A';
 }
 
+function trustedProfilePicture(image) {
+  if (typeof image !== 'string' || !image) return '';
+  try {
+    const url = new URL(image);
+    const safePath = url.pathname.toLowerCase();
+    if (
+      url.protocol !== 'https:' ||
+      url.hostname !== 'res.cloudinary.com' ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !safePath.includes('/image/upload/') ||
+      !safePath.includes('/afro-centric/profile-pictures/')
+    ) {
+      return '';
+    }
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
 function KenteStripe({ className = '' }) {
   return <div className={`kente-stripe ${className}`} aria-hidden="true" />;
 }
 
 function Avatar({ name, image, size = 'normal' }) {
-  if (image) {
-    return <img className={`avatar avatar-${size}`} src={image} alt="" />;
+  const safeImage = trustedProfilePicture(image);
+  if (safeImage) {
+    return <img className={`avatar avatar-${size}`} src={safeImage} alt="" referrerPolicy="no-referrer" />;
   }
   return <span className={`avatar avatar-${size}`}>{initials(name)}</span>;
 }
@@ -129,7 +156,6 @@ function PhotoCard({ photo, onOpen }) {
             <h3>{photo.title}</h3>
             <p>{[photo.location, photo.country].filter(Boolean).join(' · ')}</p>
           </div>
-          <Heart className="photo-heart" size={17} strokeWidth={1.8} aria-hidden="true" />
         </div>
         {photo.photographer?.name && (
           <div className="photo-credit">
@@ -137,6 +163,12 @@ function PhotoCard({ photo, onOpen }) {
             <span>by {photo.photographer.name}</span>
           </div>
         )}
+        <button className="photo-social-link" onClick={() => onOpen(photo)}>
+          <Heart size={14} strokeWidth={1.9} />
+          <MessageCircle size={14} strokeWidth={1.9} />
+          <span>Like &amp; comment</span>
+          <ArrowUpRight size={14} />
+        </button>
       </div>
     </article>
   );
@@ -219,7 +251,7 @@ function AuthDialog({ mode, onModeChange, onClose, onSuccess, onError }) {
         </Button>
       </form>
       <p className="auth-switch">
-        {mode === 'login' ? 'New to Sanaa?' : 'Already part of the community?'}{' '}
+        {mode === 'login' ? 'New to Marvel?' : 'Already part of the community?'}{' '}
         <button onClick={() => onModeChange(mode === 'login' ? 'register' : 'login')}>
           {mode === 'login' ? 'Create an account' : 'Sign in'}
         </button>
@@ -322,17 +354,237 @@ function UploadDialog({ onClose, onUploaded, onError, token }) {
   );
 }
 
-function PhotoDialog({ photo, onClose }) {
+function PhotoDialog({ photo, token, user, onClose, onAuth }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [likeBusy, setLikeBusy] = useState(false);
+  const [commentBusy, setCommentBusy] = useState(false);
+  const [commentText, setCommentText] = useState('');
+  const [editingId, setEditingId] = useState('');
+  const [editingText, setEditingText] = useState('');
+  const [commentPage, setCommentPage] = useState(1);
+  const [error, setError] = useState('');
+  const commentsPerPage = 10;
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    api.getPhoto(photo._id)
+      .then((result) => {
+        if (active) setDetail(result.data);
+      })
+      .catch((requestError) => {
+        if (active) setError(requestError.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [photo._id]);
+
+  async function reloadDetail() {
+    const result = await api.getPhoto(photo._id);
+    setDetail(result.data);
+  }
+
+  async function handleLike() {
+    if (!token) {
+      onAuth();
+      return;
+    }
+    setLikeBusy(true);
+    setError('');
+    try {
+      await api.toggleLike(photo._id, token);
+      await reloadDetail();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLikeBusy(false);
+    }
+  }
+
+  async function handleCommentSubmit(event) {
+    event.preventDefault();
+    if (!token) {
+      onAuth();
+      return;
+    }
+    const text = commentText.trim();
+    if (!text) return;
+    setCommentBusy(true);
+    setError('');
+    try {
+      await api.createComment(photo._id, text, token);
+      setCommentText('');
+      setCommentPage(1);
+      await reloadDetail();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setCommentBusy(false);
+    }
+  }
+
+  async function handleCommentUpdate(commentId) {
+    const text = editingText.trim();
+    if (!text) {
+      setError('A comment cannot be empty.');
+      return;
+    }
+    setCommentBusy(true);
+    setError('');
+    try {
+      await api.updateComment(commentId, text, token);
+      setEditingId('');
+      setEditingText('');
+      await reloadDetail();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setCommentBusy(false);
+    }
+  }
+
+  async function handleCommentDelete(commentId) {
+    setCommentBusy(true);
+    setError('');
+    try {
+      await api.deleteComment(commentId, token);
+      await reloadDetail();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setCommentBusy(false);
+    }
+  }
+
+  const comments = detail?.comments || [];
+  const likes = detail?.likes || [];
+  const currentUserId = String(user?._id || '');
+  const liked = Boolean(currentUserId && likes.some((like) => (
+    String(like.user?._id || like.user) === currentUserId
+  )));
+  const commentCount = detail?.commentCount ?? comments.length;
+  const likeCount = detail?.likeCount ?? likes.length;
+  const commentPages = Math.max(1, Math.ceil(comments.length / commentsPerPage));
+  const pageComments = comments.slice(
+    (commentPage - 1) * commentsPerPage,
+    commentPage * commentsPerPage,
+  );
+
   return (
     <Modal title={photo.title} eyebrow={photo.category} onClose={onClose} wide>
       <img className="detail-image" src={photo.imageUrl} alt={photo.title} />
       <div className="detail-copy">
         <div>
           <p className="detail-location">{[photo.location, photo.country].filter(Boolean).join(' · ')}</p>
-          {photo.description && <p className="detail-description">{photo.description}</p>}
-          {photo.photographer?.name && <p className="detail-credit">Shared by {photo.photographer.name}</p>}
+          {(detail?.description || photo.description) && <p className="detail-description">{detail?.description || photo.description}</p>}
+          {(detail?.photographer?.name || photo.photographer?.name) && <p className="detail-credit">Shared by {detail?.photographer?.name || photo.photographer?.name}</p>}
         </div>
       </div>
+      {error && <p className="social-error" role="alert">{error}</p>}
+      <div className="engagement-bar">
+        <button
+          className={`like-button ${liked ? 'like-button-active' : ''}`}
+          onClick={handleLike}
+          disabled={likeBusy || loading}
+          aria-pressed={liked}
+        >
+          <Heart size={18} fill={liked ? 'currentColor' : 'none'} />
+          <span>{likeBusy ? 'Saving…' : liked ? 'Liked' : 'Like'}</span>
+          <strong>{likeCount}</strong>
+        </button>
+        <span className="engagement-divider" />
+        <span className="comment-total"><MessageCircle size={17} /> {commentCount} {commentCount === 1 ? 'comment' : 'comments'}</span>
+      </div>
+
+      <section className="comments-section" aria-label="Photo comments">
+        <div className="comments-heading">
+          <div>
+            <p className="eyebrow">The conversation</p>
+            <h3>Words from the community</h3>
+          </div>
+          {!token && <button className="text-link" onClick={onAuth}>Sign in to join <ArrowUpRight size={15} /></button>}
+        </div>
+        {token && (
+          <form className="comment-compose" onSubmit={handleCommentSubmit}>
+            <Avatar name={user?.name || 'You'} image={user?.profilePicture} size="small" />
+            <textarea
+              value={commentText}
+              onChange={(event) => setCommentText(event.target.value)}
+              maxLength={1000}
+              rows={2}
+              placeholder="Add something kind to the conversation…"
+              aria-label="Write a comment"
+            />
+            <Button type="submit" disabled={commentBusy || !commentText.trim()} aria-label="Post comment">
+              <Send size={16} />
+            </Button>
+          </form>
+        )}
+        {loading ? (
+          <div className="comments-loading" role="status">Gathering the conversation…</div>
+        ) : pageComments.length ? (
+          <div className="comment-list">
+            {pageComments.map((comment) => {
+              const author = comment.user || {};
+              const isOwner = String(author._id || author) === currentUserId;
+              const canDelete = isOwner || user?.role === 'admin';
+              const date = comment.createdAt
+                ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(comment.createdAt))
+                : '';
+              return (
+                <article className="comment-item" key={comment._id}>
+                  <Avatar name={author.name || 'Community member'} image={author.profilePicture} size="small" />
+                  <div className="comment-content">
+                    <div className="comment-author">
+                      <strong>{author.name || 'Community member'}</strong>
+                      <time>{date}</time>
+                    </div>
+                    {editingId === comment._id ? (
+                      <div className="comment-edit">
+                        <textarea value={editingText} onChange={(event) => setEditingText(event.target.value)} maxLength={1000} rows={2} aria-label="Edit your comment" />
+                        <div>
+                          <button className="comment-action" onClick={() => { setEditingId(''); setEditingText(''); }}>Cancel</button>
+                          <button className="comment-action comment-save" onClick={() => handleCommentUpdate(comment._id)} disabled={commentBusy}>Save</button>
+                        </div>
+                      </div>
+                    ) : <p>{comment.text}</p>}
+                    {(isOwner || canDelete) && editingId !== comment._id && (
+                      <div className="comment-actions">
+                        {isOwner && (
+                          <button className="comment-action" onClick={() => { setEditingId(comment._id); setEditingText(comment.text); }}>
+                            <Edit2 size={13} /> Edit
+                          </button>
+                        )}
+                        {canDelete && (
+                          <button className="comment-action comment-delete" onClick={() => handleCommentDelete(comment._id)} disabled={commentBusy}>
+                            <Trash2 size={13} /> Delete
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="comments-empty">
+            <MessageCircle size={18} />
+            <p>No words here yet. You could be the first to join the conversation.</p>
+          </div>
+        )}
+        {commentPages > 1 && (
+          <div className="comment-pagination">
+            <button className="icon-button" disabled={commentPage <= 1} onClick={() => setCommentPage((page) => page - 1)} aria-label="Previous comments"><ChevronLeft size={17} /></button>
+            <span>{commentPage} of {commentPages}</span>
+            <button className="icon-button" disabled={commentPage >= commentPages} onClick={() => setCommentPage((page) => page + 1)} aria-label="Next comments"><ChevronRight size={17} /></button>
+          </div>
+        )}
+      </section>
     </Modal>
   );
 }
@@ -345,9 +597,9 @@ function Sidebar({ activeTab, onNavigate, user, onAuth }) {
   ];
   return (
     <aside className="sidebar">
-      <button className="brand" onClick={() => onNavigate('home')} aria-label="Sanaa home">
+      <button className="brand" onClick={() => onNavigate('home')} aria-label="Marvel home">
         <span className="brand-mark">S</span>
-        <span className="brand-copy"><strong>sanaa</strong><small>stories in every frame</small></span>
+        <span className="brand-copy"><strong>Marvel</strong><small>stories in every frame</small></span>
       </button>
       <KenteStripe className="sidebar-stripe" />
       <span className="nav-caption">Your space</span>
@@ -396,7 +648,7 @@ function BottomNav({ activeTab, onNavigate }) {
 function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState(() => localStorage.getItem('sanaa-token') || '');
+  const [token, setToken] = useState(() => localStorage.getItem('Marvel-token') || '');
   const [photos, setPhotos] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 9, total: 0, totalPages: 0 });
   const [category, setCategory] = useState('all stories');
@@ -407,14 +659,15 @@ function App() {
   const [authMode, setAuthMode] = useState('');
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState(null);
+  const [profilePictureBusy, setProfilePictureBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [refreshIndex, setRefreshIndex] = useState(0);
-  const [theme, setTheme] = useState(() => localStorage.getItem('sanaa-theme') || 'light');
+  const [theme, setTheme] = useState(() => localStorage.getItem('Marvel-theme') || 'light');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem('sanaa-theme', theme);
+    localStorage.setItem('Marvel-theme', theme);
   }, [theme]);
 
   useEffect(() => {
@@ -422,7 +675,7 @@ function App() {
     api.me(token)
       .then((result) => setUser(result.data))
       .catch(() => {
-        localStorage.removeItem('sanaa-token');
+        localStorage.removeItem('Marvel-token');
         setToken('');
         setUser(null);
       });
@@ -465,6 +718,21 @@ function App() {
     setToast({ message, tone });
   }
 
+  async function handleSecureLogout() {
+    try {
+      await api.logout(token);
+    } catch (error) {
+      if (error.status !== 401) {
+        showToast(error.message || 'Could not securely sign out. Please try again.', 'error');
+        return;
+      }
+    }
+    localStorage.removeItem('sanaa-token');
+    setToken('');
+    setUser(null);
+    showToast('You have signed out. Your active tokens have been revoked.');
+  }
+
   function openShare() {
     if (!token) {
       setAuthMode('login');
@@ -474,7 +742,7 @@ function App() {
   }
 
   function handleAuthSuccess(account) {
-    localStorage.setItem('sanaa-token', account.token);
+    localStorage.setItem('Marvel-token', account.token);
     setToken(account.token);
     setUser(account);
     setAuthMode('');
@@ -482,10 +750,38 @@ function App() {
   }
 
   function handleLogout() {
-    localStorage.removeItem('sanaa-token');
+    localStorage.removeItem('Marvel-token');
     setToken('');
     setUser(null);
     showToast('You have signed out. Come back soon.');
+  }
+
+  async function handleProfilePictureChange(event) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('Choose an image smaller than 10 MB.', 'error');
+      return;
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      showToast('Choose a JPEG, PNG, or WebP image.', 'error');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('image', file);
+    setProfilePictureBusy(true);
+    try {
+      const result = await api.updateProfilePicture(token, formData);
+      setUser((current) => ({ ...current, ...result.data.user }));
+      showToast('Your profile picture has been updated.');
+    } catch (error) {
+      showToast(error.message || 'Could not update your profile picture.', 'error');
+    } finally {
+      setProfilePictureBusy(false);
+    }
   }
 
   function handleSearch(event) {
@@ -523,8 +819,8 @@ function App() {
       />
       <div className="main-column">
         <header className="topbar">
-          <button className="mobile-brand" onClick={() => navigate('home')} aria-label="Sanaa home">
-            <span className="brand-mark">S</span><strong>sanaa</strong>
+          <button className="mobile-brand" onClick={() => navigate('home')} aria-label="Marvel home">
+            <span className="brand-mark">S</span><strong>Marvel</strong>
           </button>
           <button className="mobile-menu-toggle icon-button" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label="Toggle navigation">
             {mobileMenuOpen ? <X size={21} /> : <Menu size={21} />}
@@ -556,7 +852,7 @@ function App() {
               <div className="welcome-row">
                 <div>
                   <p className="eyebrow"><span className="eyebrow-dot" /> A gallery for us, by us</p>
-                  <h1>Karibu, <em>{greetingName}</em><span className="greeting-comma">.</span></h1>
+                  <h1>Marvel, <em>{greetingName}</em><span className="greeting-comma">.</span></h1>
                   <p className="welcome-copy">A place to see ourselves, remember where we come from, and share where we’re going.</p>
                 </div>
                 <span className="home-date"><span className="home-date-mark">✳</span> Made of many stories</span>
@@ -704,13 +1000,24 @@ function App() {
                     <KenteStripe className="profile-stripe" />
                     <div className="profile-card-foot">
                       <span><span className="status-dot" /> Account active</span>
-                      <button className="text-link" onClick={handleLogout}><LogOut size={16} /> Sign out</button>
+                      <label className={`profile-picture-control ${profilePictureBusy ? 'profile-picture-busy' : ''}`}>
+                        <Camera size={15} />
+                        <span>{profilePictureBusy ? 'Uploading…' : 'Update picture'}</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={handleProfilePictureChange}
+                          disabled={profilePictureBusy}
+                          aria-label="Choose a new profile picture"
+                        />
+                      </label>
+                      <button className="text-link" onClick={handleSecureLogout}><LogOut size={16} /> Sign out</button>
                     </div>
                   </section>
                   <section className="settings-card">
                     <div className="settings-heading">
                       <span className="settings-icon"><Settings2 size={18} /></span>
-                      <div><h3>Your settings</h3><p>Make Sanaa feel like yours.</p></div>
+                      <div><h3>Your settings</h3><p>Make Marvel feel like yours.</p></div>
                     </div>
                     <div className="setting-row">
                       <div className="setting-description">
@@ -772,7 +1079,15 @@ function App() {
           onError={(message) => showToast(message, 'error')}
         />
       )}
-      {selectedPhoto && <PhotoDialog photo={selectedPhoto} onClose={() => setSelectedPhoto(null)} />}
+      {selectedPhoto && (
+        <PhotoDialog
+          photo={selectedPhoto}
+          token={token}
+          user={user}
+          onClose={() => setSelectedPhoto(null)}
+          onAuth={() => setAuthMode('login')}
+        />
+      )}
     </div>
   );
 }
